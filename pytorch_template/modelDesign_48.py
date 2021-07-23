@@ -17,8 +17,28 @@ YOUR_MODEL_PATH = os.path.join(CUR_DIRNAME, YOUR_MODEL_NAME)
 import numpy as np
 import torch.nn as nn
 import torch
-import torch.nn.functional as F
+# import torch.nn.functional as F
 from torch.utils.data import Dataset
+
+
+class MyLoss(nn.Module):
+    def __init__(self):
+        super(MyLoss, self).__init__()
+        self.eps = 1e-6
+
+    def forward(self, pres, labels):
+        pres = pres.view(-1, 12, 32, 2)
+        labels = labels.view(-1, 12, 32, 2)
+        pa = pres[:, :, :, 0]
+        pb = pres[:, :, :, 1]
+        a = labels[:, :, :, 0]
+        b = labels[:, :, :, 1]
+        loss = (a * pa + b * pb).sum(2).pow(2) + (b * pa - a * pb).sum(2).pow(2)
+        # loss_s = (a.pow(2) + b.pow(2)).sum(2) * (pa.pow(2) + pb.pow(2)).sum(2) + self.eps
+        loss_s = (a.pow(2) + b.pow(2)).sum(2) + self.eps
+        loss = loss / loss_s
+        loss = 1 - loss.mean(1).mean(0)
+        return loss
 
 
 # =======================================================================================================================
@@ -127,11 +147,12 @@ class Encoder(nn.Module):
         self.sig = nn.Sigmoid()
         self.quantize = QuantizationLayer(self.num_quan_bits)
 
-    def forward(self, x):
+    def forward(self, x,quant=True):
         out = self.fc1(x)
         out = self.fc2(out)
         out = self.sig(out)
-        out = self.quantize(out)
+        if quant:
+            out = self.quantize(out)
         return out
 
 
@@ -148,8 +169,11 @@ class Decoder(nn.Module):
         self.sig = nn.Sigmoid()
         self.relu = nn.ReLU()
 
-    def forward(self, x):
-        out = self.dequantize(x)
+    def forward(self, x, quant=True):
+        if quant:
+            out = self.dequantize(x)
+        else:
+            out = x
         out = out.view(-1, int(self.feedback_bits / self.num_quan_bits))
         out = self.sig(self.fc(out))
         out = out.view(-1, 2, 12, 32)
@@ -167,9 +191,9 @@ class AutoEncoder(nn.Module):
         self.encoder = Encoder(feedback_bits)
         self.decoder = Decoder(feedback_bits)
 
-    def forward(self, x):
-        feature = self.encoder(x)
-        out = self.decoder(feature)
+    def forward(self, x, quant=True):
+        feature = self.encoder(x, quant)
+        out = self.decoder(feature, quant)
         return out
 
 
